@@ -276,6 +276,10 @@ static void on_sta_start_stop(void *arg, esp_event_base_t base, int32_t id, void
 
 static bool radio_start(void)
 {
+#if CONFIG_LX_NET_DISABLED
+    s_state = LX_NET_NO_RADIO;
+    return false;
+#endif
     if (s_started) return true;
     esp_netif_init();
     esp_event_loop_create_default();
@@ -566,6 +570,10 @@ static void net_task(void *arg)
 
 esp_err_t lx_net_init(void)
 {
+#if CONFIG_LX_NET_DISABLED
+    s_state = LX_NET_NO_RADIO;
+    ESP_LOGI(TAG, "offline build: ESP-Hosted access disabled");
+#endif
     creds_load();
     if (k_zones[s_tz].posix) {
         setenv("TZ", k_zones[s_tz].posix, 1);

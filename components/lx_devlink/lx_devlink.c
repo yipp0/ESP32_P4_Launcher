@@ -31,6 +31,7 @@
 #include "esp_app_desc.h"
 #include "esp_core_dump.h"
 #include "driver/usb_serial_jtag.h"
+#include "driver/uart.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
@@ -46,6 +47,44 @@ static volatile int64_t  s_last_host_us = -HOST_ALIVE_US;
 static uint8_t          *s_rx;        /* request payload  */
 static char             *s_tx;        /* response scratch */
 
+/* Most boards expose native USB Serial/JTAG. Some, including T-Display P4,
+ * expose UART0 through a USB bridge and reserve their native USB for host I/O. */
+static bool transport_connected(void)
+{
+#if CONFIG_LX_DEVLINK_UART
+    return true;
+#else
+    return usb_serial_jtag_is_connected();
+#endif
+}
+
+static int transport_read(void *data, size_t len, TickType_t timeout)
+{
+#if CONFIG_LX_DEVLINK_UART
+    return uart_read_bytes(CONFIG_ESP_CONSOLE_UART_NUM, data, len, timeout);
+#else
+    return usb_serial_jtag_read_bytes(data, len, timeout);
+#endif
+}
+
+static int transport_write(const void *data, size_t len, TickType_t timeout)
+{
+#if CONFIG_LX_DEVLINK_UART
+    return uart_write_bytes(CONFIG_ESP_CONSOLE_UART_NUM, data, len);
+#else
+    return usb_serial_jtag_write_bytes(data, len, timeout);
+#endif
+}
+
+static void transport_flush(void)
+{
+#if CONFIG_LX_DEVLINK_UART
+    uart_wait_tx_done(CONFIG_ESP_CONSOLE_UART_NUM, pdMS_TO_TICKS(200));
+#else
+    usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+#endif
+}
+
 /* PUT state */
 static FILE    *s_put_f;
 static char     s_put_path[160];
@@ -55,7 +94,7 @@ static uint32_t s_put_size, s_put_crc, s_put_done, s_put_crc_run;
 
 static bool host_alive(void)
 {
-    return usb_serial_jtag_is_connected() &&
+    return transport_connected() &&
            esp_timer_get_time() - s_last_host_us < HOST_ALIVE_US;
 }
 
@@ -64,7 +103,7 @@ static bool write_all(const void *p, size_t len, TickType_t to)
     const uint8_t *b = p;
     while (len) {
         /* The driver queues into a 16 KB ring buffer: an item larger than that never fits */
-        int n = usb_serial_jtag_write_bytes(b, len > 4096 ? 4096 : len, to);
+        int n = transport_write(b, len > 4096 ? 4096 : len, to);
         if (n <= 0) return false;
         b += n; len -= n;
     }
@@ -144,7 +183,10 @@ static int dl_vprintf(const char *fmt, va_list ap)
 {
     va_list ap2;
     va_copy(ap2, ap);
-    int r = s_orig_vprintf(fmt, ap);     /* keep the UART console */
+    int r = 0;
+#if !CONFIG_LX_DEVLINK_UART
+    r = s_orig_vprintf(fmt, ap);     /* separate UART console */
+#endif
     if (host_alive() && xSemaphoreGetMutexHolder(s_tx_lock) != xTaskGetCurrentTaskHandle()) {
         char buf[256];
         int n = vsnprintf(buf, sizeof(buf), fmt, ap2);
@@ -410,7 +452,9 @@ static void h_crash(uint16_t seq)
     }
     jcat(&j, ",\"coredump\":");
 #if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
-    esp_core_dump_summary_t *sum = malloc(sizeof(*sum));
+    /* IDF can return a valid dump without a captured exception task. Its
+     * summary leaves those fields untouched; never report uninitialized RAM. */
+    esp_core_dump_summary_t *sum = calloc(1, sizeof(*sum));
     if (sum && esp_core_dump_image_check() == ESP_OK && esp_core_dump_get_summary(sum) == ESP_OK) {
         jcat(&j, "{\"task\":");
         jstr(&j, sum->exc_task);
@@ -587,7 +631,7 @@ static void dispatch(uint8_t type, uint16_t seq, uint8_t *p, uint32_t len)
     case DL_STATUS: h_status(seq); break;
     case DL_REBOOT:
         reply_str(type, seq, "rebooting");
-        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(200));
+        transport_flush();
         vTaskDelay(pdMS_TO_TICKS(50));
         esp_restart();
         break;
@@ -621,7 +665,7 @@ static bool read_exact(uint8_t *buf, size_t len, int timeout_ms)
 {
     int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 1000;
     while (len) {
-        int n = usb_serial_jtag_read_bytes(buf, len, pdMS_TO_TICKS(50));
+        int n = transport_read(buf, len, pdMS_TO_TICKS(50));
         if (n > 0) { buf += n; len -= n; }
         else if (esp_timer_get_time() > deadline) return false;
     }
@@ -634,7 +678,7 @@ static void devlink_task(void *arg)
     for (;;) {
         /* Sync on the two start-of-frame bytes */
         uint8_t c;
-        if (usb_serial_jtag_read_bytes(&c, 1, portMAX_DELAY) != 1 || c != DL_SOF0) continue;
+        if (transport_read(&c, 1, portMAX_DELAY) != 1 || c != DL_SOF0) continue;
         if (!read_exact(&c, 1, RX_TIMEOUT_MS) || c != DL_SOF1) continue;
         hdr[0] = DL_SOF0; hdr[1] = DL_SOF1;
         if (!read_exact(hdr + 2, DL_HDR_SIZE - 2, RX_TIMEOUT_MS)) continue;
@@ -675,13 +719,25 @@ void lx_devlink_app_exited(const char *path, int code, bool forced,
 
 esp_err_t lx_devlink_start(void)
 {
+#if CONFIG_LX_DEVLINK_UART
+    uart_config_t cfg = {
+        .baud_rate = CONFIG_LX_DEVLINK_UART_BAUDRATE,
+        .data_bits = UART_DATA_8_BITS, .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1, .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    esp_err_t err = uart_param_config(CONFIG_ESP_CONSOLE_UART_NUM, &cfg);
+    if (err == ESP_OK)
+        err = uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 40 * 1024, 16 * 1024, 0, NULL, 0);
+#else
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = 40 * 1024,
         .tx_buffer_size = 16 * 1024,
     };
     esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+#endif
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "USB-Serial-JTAG driver install failed: %s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "DevLink transport install failed: %s", esp_err_to_name(err));
         return err;
     }
     s_rx = heap_caps_malloc(DL_MAX_PAYLOAD + 1, MALLOC_CAP_SPIRAM);
@@ -692,6 +748,10 @@ esp_err_t lx_devlink_start(void)
     s_orig_vprintf = esp_log_set_vprintf(dl_vprintf);
     if (xTaskCreatePinnedToCore(devlink_task, "devlink", 8192, NULL, 4, NULL, 1) != pdPASS)
         return ESP_ERR_NO_MEM;
+#if CONFIG_LX_DEVLINK_UART
+    ESP_LOGI(TAG, "DevLink ready on UART%d at %d baud", CONFIG_ESP_CONSOLE_UART_NUM, CONFIG_LX_DEVLINK_UART_BAUDRATE);
+#else
     ESP_LOGI(TAG, "DevLink ready on USB-Serial-JTAG");
+#endif
     return ESP_OK;
 }

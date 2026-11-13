@@ -1,0 +1,9 @@
+menu "Launcher networking"
+config LX_NET_DISABLED
+    bool "Disable network coprocessor access (offline launcher)"
+    default n
+    help
+        Report no radio without connecting the ESP-Hosted link or accessing its reset GPIO.
+        For boards whose coprocessor still has incompatible factory firmware.
+        SD apps, USB DevLink, display, touch and audio remain available.
+endmenu

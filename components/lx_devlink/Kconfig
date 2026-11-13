@@ -1,0 +1,20 @@
+menu "Launcher DevLink"
+choice LX_DEVLINK_TRANSPORT
+    prompt "DevLink serial transport"
+    default LX_DEVLINK_USB_SERIAL_JTAG
+config LX_DEVLINK_USB_SERIAL_JTAG
+    bool "Native USB Serial/JTAG"
+config LX_DEVLINK_UART
+    bool "UART console (USB-to-UART bridge)"
+    depends on ESP_CONSOLE_UART
+endchoice
+config LX_DEVLINK_UART_BAUDRATE
+    int "DevLink UART baud rate"
+    depends on LX_DEVLINK_UART
+    range 115200 3000000
+    default 921600
+    help
+        Host tools must use the same baud rate (--baud or PAPP_BAUD).
+        Once DevLink starts, ESP_LOG messages on this console are framed
+        instead of emitted as plain text, to avoid corrupting app uploads.
+endmenu

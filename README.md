@@ -162,7 +162,7 @@ The test apps (`hello`, `gfx_demo`, `audio_test`, `input_test`, `thread_test`, `
 
 ## Hardware
 
-Three boards are supported. All run the same apps from the same SD card. Adding a board:
+The supported boards run the same apps from the same SD card. Adding a board:
 [docs/PORTING_GUIDE.md](docs/PORTING_GUIDE.md).
 
 | Part | Guition ESP32-P4 4.3" | Guition JC1060P470C 7" | M5Stack Tab5 |
@@ -188,6 +188,12 @@ gamepads on the lower USB-A port only; notes in [docs/PORT_WAVESHARE_P4.md](docs
 To use the launcher you only need to flash it once, from a web browser, and prepare an SD card. Building from
 source is optional.
 
+This fork also adds **LILYGO T-Display P4 V1 AMOLED** (`lilygo_tdisplay_p4`, H753,
+568×1232). The initial port runs offline with the factory ESP-AT coprocessor firmware:
+install apps over USB DevLink or copy them to the SD card. See
+[T-Display P4 build, flashing and hardware notes](docs/PORT_TDISPLAY_P4.md).
+The TFT model, V2, and P4 Air are different hardware and are not supported by this package.
+
 ### 1. Flash the launcher from your browser
 
 You need Chrome or Edge on a desktop computer (the page uses Web Serial, which Firefox and Safari don't
@@ -202,6 +208,7 @@ have) and a USB cable for the board's USB-Serial-JTAG port.
    | Guition JC1060P470C 7" | `launcher_guition_p4_7_full.bin` |
    | M5Stack Tab5 | `launcher_m5stack_tab5_full.bin` |
    | Waveshare ESP32-P4-WIFI6-Touch-LCD-3.5 | `launcher_waveshare_p4_35_full.bin` |
+   | LILYGO T-Display P4 V1 AMOLED (this fork; offline) | `launcher_lilygo_tdisplay_p4_full.bin` |
 
    A full image holds the bootloader, partition table and launcher, so it goes to address 0. The files
    without `_full` are only the launcher, for Settings → Update.

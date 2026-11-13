@@ -43,11 +43,15 @@ def main():
             continue
         r = dev(args.port, "deploy", papp, "--timeout", str(limit), "--", *app_args, timeout=limit + 30)
         print(f"{'ok  ' if r.returncode == 0 else 'FAIL'} {name} (exit {r.returncode})")
+        if r.returncode:
+            print((r.stdout + r.stderr).strip())
         failed += r.returncode != 0
 
-    crash = dev(args.port, "crash").stdout
-    clean = "no crash recorded" in crash
+    crash = dev(args.port, "crash")
+    clean = crash.returncode == 0 and "no crash recorded" in crash.stdout
     print(f"{'ok  ' if clean else 'FAIL'} crash record")
+    if not clean:
+        print((crash.stdout + crash.stderr).strip())
     failed += not clean
     print("PASSED" if not failed else f"{failed} FAILED")
     return 1 if failed else 0

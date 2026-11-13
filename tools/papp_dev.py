@@ -109,10 +109,10 @@ class DevLink:
     """Frame-level client. A reader thread splits the byte stream into frames;
     responses go to a queue keyed by seq, LOG/EVENT frames to callbacks."""
 
-    def __init__(self, port, on_log=None, on_event=None):
+    def __init__(self, port, on_log=None, on_event=None, baud=None):
         self.ser = serial.Serial()
         self.ser.port = port
-        self.ser.baudrate = 115200
+        self.ser.baudrate = baud or int(os.environ.get("PAPP_BAUD", "115200"))
         self.ser.timeout = 0.05
         # Don't toggle DTR/RTS on open: on USB-Serial-JTAG RTS high with DTR low resets the chip.
         if os.name == "nt":
@@ -214,6 +214,21 @@ class DevLink:
     # ── High level ────────────────────────────────────────────────────────
     def ping(self):
         return self.request(PING, timeout=2.0) == b"pong"
+
+    def wait_ready(self, timeout=10.0):
+        """Only retry PING: UART bridges can reset a board when opened, losing
+        requests sent before the app has booted. Never retry a file mutation."""
+        deadline = time.monotonic() + timeout
+        while self.alive:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            try:
+                if self.request(PING, timeout=min(1.0, left)) == b"pong":
+                    return
+            except DevLinkError:
+                continue
+        raise DevLinkError("DevLink did not become ready; check port, baud rate and firmware")
 
     def put(self, local, remote, progress=True):
         data = open(local, "rb").read()
@@ -490,6 +505,10 @@ def main():
             stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(description="DevLink host tool")
     ap.add_argument("--port")
+    ap.add_argument("--baud", type=int, default=int(os.environ.get("PAPP_BAUD", "115200")),
+                    help="serial baud rate (UART bridges; default: PAPP_BAUD or 115200)")
+    ap.add_argument("--connect-timeout", type=float, default=10.0,
+                    help="seconds to wait for DevLink after opening a resetting UART bridge")
     ap.add_argument("--no-time", action="store_true", help="don't set the board's clock from this PC")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("info")
@@ -524,10 +543,15 @@ def main():
     p.add_argument("args", nargs="*")
     args = ap.parse_args()
 
+    dl = None
     try:
-        dl = DevLink(args.port or find_port(), on_log=print_log,
+        dl = DevLink(args.port or find_port(), baud=args.baud, on_log=print_log,
                      on_event=lambda ev: print(f"EVENT {json.dumps(ev)}", file=sys.stderr))
+        if args.connect_timeout > 0:
+            dl.wait_ready(args.connect_timeout)
     except (DevLinkError, serial.SerialException) as e:
+        if dl:
+            dl.close()
         print(f"error: {e}", file=sys.stderr)
         return 125
     try:
