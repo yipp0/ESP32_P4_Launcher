@@ -259,10 +259,11 @@ static void h_info(uint16_t seq)
     jcat(&j, ",\"board_name\":");
     jstr(&j, b->name);
     jcat(&j, ",\"caps\":%lu,\"display\":[%u,%u],\"sd\":%s,\"uptime_ms\":%lld,"
-             "\"free_internal\":%u,\"free_psram\":%u,\"largest_psram\":%u,\"app_state\":\"%s\",\"app\":",
+             "\"free_internal\":%u,\"largest_internal\":%u,\"free_psram\":%u,\"largest_psram\":%u,\"app_state\":\"%s\",\"app\":",
          (unsigned long)b->caps, b->display_w, b->display_h, bsp_sdcard_mounted() ? "true" : "false",
          esp_timer_get_time() / 1000,
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+         (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
          (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
          (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM), app_state_name());
     jstr(&j, lx_app_path());
@@ -728,7 +729,15 @@ esp_err_t lx_devlink_start(void)
     };
     esp_err_t err = uart_param_config(CONFIG_ESP_CONSOLE_UART_NUM, &cfg);
     if (err == ESP_OK)
-        err = uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 40 * 1024, 16 * 1024, 0, NULL, 0);
+        /* UART traffic is paced into 1 KB frames by the host. Smaller internal
+         * rings leave contiguous SRAM for 32 KB app stacks with Wi-Fi/BLE up. */
+        err = uart_driver_install(CONFIG_ESP_CONSOLE_UART_NUM, 8 * 1024, 8 * 1024, 0, NULL, 0);
+    /* At 921600 baud the default near-full FIFO threshold leaves too little
+     * interrupt latency margin while SDIO and SD storage are active. */
+    if (err == ESP_OK)
+        err = uart_set_rx_full_threshold(CONFIG_ESP_CONSOLE_UART_NUM, 32);
+    if (err == ESP_OK)
+        err = uart_set_rx_timeout(CONFIG_ESP_CONSOLE_UART_NUM, 2);
 #else
     usb_serial_jtag_driver_config_t cfg = {
         .rx_buffer_size = 40 * 1024,

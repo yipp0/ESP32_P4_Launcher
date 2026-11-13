@@ -1,8 +1,8 @@
 dependencies:
   idf: ">=5.5.4,<5.6"
   espressif/esp_codec_dev: "1.5.11"
-  # Required by the launcher's network component, but not initialized by this
-  # offline board package. These versions match the upstream Guition builds.
+  # Match the C6 migration image and the OSI reset hook in board_c6.c.
+  # These versions also match the upstream Guition builds.
   espressif/esp_wifi_remote: "1.6.5"
   espressif/esp_hosted: "2.12.13"
   espressif/eppp_link: "1.1.6"

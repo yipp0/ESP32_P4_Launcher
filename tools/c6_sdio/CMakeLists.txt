@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.22)
+# Pin documented in README.md; keep the flasher checkout outside this repository.
+if(NOT DEFINED ESP_SERIAL_FLASHER_DIR)
+    message(FATAL_ERROR "Set -DESP_SERIAL_FLASHER_DIR=/path/to/esp-serial-flasher")
+endif()
+set(EXTRA_COMPONENT_DIRS "${ESP_SERIAL_FLASHER_DIR}" "../../components/bsp" "../../components/fatfs")
+get_filename_component(FLASHER_COMPONENT_NAME "${ESP_SERIAL_FLASHER_DIR}" NAME)
+if(NOT FLASHER_COMPONENT_NAME STREQUAL "esp_serial_flasher")
+    message(FATAL_ERROR "The flasher checkout directory must be named esp_serial_flasher")
+endif()
+set(SDKCONFIG_DEFAULTS "sdkconfig.defaults")
+include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+project(tdisplay_c6_sdio)

@@ -3,12 +3,12 @@ idf_component_register(SRCS "lx_net.c" "lx_c6.c" INCLUDE_DIRS "include"
 
 # The esp_hosted version this board's launcher speaks (each board pins its own): a C6 image must match it
 idf_component_get_property(hosted_dir espressif__esp_hosted COMPONENT_DIR)
-if(CONFIG_LX_NET_DISABLED)
+if(CONFIG_LX_NET_DISABLED OR CONFIG_LX_HOSTED_DEFERRED_INIT)
     # esp_hosted 2.12.13 starts SDIO/RPC tasks in a global constructor, even
     # when no Wi-Fi API is called. An offline board must not initialize that
     # transport (or its reset pin) before the BSP has configured its rails.
-    # Drop only its automatic init/deinit unit; retain the API implementation
-    # needed by the launcher's compiled, but disabled, networking services.
+    # Deferred boards start it explicitly after BSP initialization. Drop only
+    # its automatic init/deinit unit; retain the API implementation.
     idf_component_get_property(hosted_lib espressif__esp_hosted COMPONENT_LIB)
     get_target_property(hosted_sources ${hosted_lib} SOURCES)
     list(FILTER hosted_sources EXCLUDE REGEX "port_esp_hosted_host_init[.]c$")

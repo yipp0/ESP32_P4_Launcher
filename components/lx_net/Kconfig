@@ -6,4 +6,11 @@ config LX_NET_DISABLED
         Report no radio without connecting the ESP-Hosted link or accessing its reset GPIO.
         For boards whose coprocessor still has incompatible factory firmware.
         SD apps, USB DevLink, display, touch and audio remain available.
+config LX_HOSTED_DEFERRED_INIT
+    bool "Start ESP-Hosted after board initialization"
+    depends on !LX_NET_DISABLED
+    default n
+    help
+        Suppress ESP-Hosted's global constructor and initialize it from
+        lx_net_init, after the BSP sets up power, reset hooks and SD storage.
 endmenu

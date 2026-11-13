@@ -5,11 +5,11 @@ assembly on the original ESP32-P4 V1 board (chip revision 1.x), with 16 MB flash
 and 32 MB hex PSRAM. The display is RM69A10, 568×1232, used in landscape as
 1232×568. TFT/HI8561, V2, and P4 Air need separate board packages.
 
-## Initial port
+## Board support
 
 The board package implements the launcher BSP using ESP-IDF peripheral APIs.
 It provides the AMOLED with two RGB565 buffers, GT9895 capacitive touch,
-microSD (SDMMC slot 0), ES8311 audio output, PCF8563 RTC, BQ27220 battery voltage,
+microSD (SPI2 while the C6 is active), ES8311 audio output, PCF8563 RTC, BQ27220 battery voltage,
 and the BOOT button as HOME. Touch reports are transformed from the controller's
 1060×2400 coordinate range into the launcher's landscape coordinates.
 
@@ -21,21 +21,37 @@ P4-only resets leave the peripheral power rails and I2C chips running. The BSP
 clears both I2C buses before its first transaction and retries power-expander
 writes after bus recovery, including after a reset during an active touch read.
 
-### Factory C6 firmware and offline mode
+### Wi-Fi and Bluetooth LE through the C6
 
-The factory C6 runs ESP-AT. ESP32_P4_Launcher normally expects ESP-Hosted; these
-are different protocols. This initial board package sets `CONFIG_LX_NET_DISABLED=y`
-and disables Bluetooth. The C6 is held in reset, network requests report no radio,
-and ESP-Hosted's automatic startup constructor is excluded by the network
-component's CMake configuration. Thus it creates no SDIO/RPC tasks and cannot
-drive a guessed reset GPIO. Display, sound,
-USB DevLink and SD apps work without changing the C6 firmware. The Store,
-Wi-Fi updates, web file manager and network/BLE apps are unavailable offline.
+The online build uses **ESP-Hosted 2.12.13** on both processors. Wi-Fi runs over
+SDIO slot 1 (CLK18, CMD19, D0..D3=14..17) at 20 MHz. NimBLE runs on the P4, with
+the C6 providing the Bluetooth LE controller over ESP-Hosted VHCI. The C6 does
+not support Bluetooth Classic.
 
-The P4 communicates with the C6 on SDIO slot 1 (CLK18, CMD19, D0..D3=14..17),
-and C6 EN is on XL9535 IO14 (bit 12). A future ESP-Hosted port must implement
-that expander-controlled reset and migrate/verify the C6 firmware separately;
-changing a GPIO number in sdkconfig is insufficient.
+The launcher's existing app lifecycle pauses Wi-Fi for apps that do not hold
+the NET interface (including the BLE test), then reconnects after they exit.
+
+C6 EN is XL9535 IO14 (bit 12), not a P4 GPIO. The BSP registers a tagged expander
+port in ESP-Hosted's GPIO abstraction before startup. `LX_HOSTED_DEFERRED_INIT`
+excludes the automatic constructor and starts the transport from `lx_net_init`,
+after board power, reset hooks and storage are ready. The hook targets the pinned
+2.12.13 OSI layout and must be reviewed when upgrading ESP-Hosted.
+
+The factory C6 runs ESP-AT, which is incompatible with this launcher. Migrate it
+once before using the online build. The [C6 SDIO migration utility](../tools/c6_sdio/README.md)
+can read a full 4 MB backup, verify it against the C6, save it on the host, then
+flash a merged ESP-Hosted image through the P4. It needs the C6 BOOT button and
+P4U; no external UART adapter is required. The backup must remain outside Git.
+
+The SD card uses SPI2 (CLK43, MOSI44, MISO39, CS42) at 20 MHz when networking is
+enabled. Interleaving SDMMC slot 0 storage and C6 SDIO slot 1 caused card errors
+on the tested V1/IDF combination. SPI keeps storage independent of the C6 bus;
+it trades SD throughput for reliable simultaneous access.
+
+For a factory ESP-AT board awaiting migration, select `LX_NET_DISABLED=y`,
+`LX_HOSTED_DEFERRED_INIT=n` and `BT_ENABLED=n`. This keeps the C6 in reset and
+uses SDMMC slot 0 for storage. Network/BLE apps and online services are unavailable
+in that offline configuration.
 
 The tested board's **P4U** port enumerates as a WCH USB-UART bridge
 (VID:PID `1a86:55d3`) connected to P4 UART0, not native USB Serial/JTAG.
@@ -80,7 +96,7 @@ still target upstream; upstream does not publish this board's firmware.
 
 Use an existing FAT32 or exFAT microSD card; the board never formats a card on
 mount failure. Preserve existing files when copying the starter `SDcard/` content.
-No Wi-Fi configuration is needed.
+Join a 2.4 GHz network in Settings → Wi-Fi after migrating the C6.
 
 ```sh
 export PAPP_BAUD=921600
@@ -94,6 +110,9 @@ python tests/board/smoke.py --port PORT
 
 `--baud 921600` on `papp_dev.py` can be used instead of `PAPP_BAUD`; setting the
 environment variable also propagates to the smoke suite's subprocesses.
+At baud rates above 115200 the host tool uses 1 KB transfer frames to bound
+UART bursts during radio activity. This board also uses earlier UART RX
+interrupts and an IRAM-safe ISR.
 
 Build any additional test apps before running the smoke suite: unbuilt apps are
 skipped. In particular, exercise app load/exit, libc, threads, display and audio.
@@ -101,6 +120,8 @@ Press BOOT only while already running to open the app menu; holding it while
 resetting instead enters the ESP32-P4 ROM downloader.
 
 ## Validation
+
+### Initial offline build
 
 Tested on 2026-11-13 with a V1 H753 AMOLED board (P4 revision 1.0), ESP-IDF
 5.5.4, an existing exFAT microSD card and the factory C6 firmware unchanged:
@@ -129,6 +150,33 @@ Tested on 2026-11-13 with a V1 H753 AMOLED board (P4 revision 1.0), ESP-IDF
 USB controller hardware, touch edge accuracy/multi-touch, battery-only
 runtime and RTC retention across a loss of power still need manual testing.
 The HID parser test exercises descriptors without a physical USB controller.
+
+### Online build
+
+The same board was migrated to ESP-Hosted 2.12.13 through P4 SDIO. A full 4 MB
+C6 backup was checked against the C6's MD5 and saved/verified on the host before
+writing. The merged C6 image passed the flasher's verification.
+
+- Wi-Fi joined a 2.4 GHz network, obtained DHCP/DNS, answered 5/5 gateway pings
+  and listed nearby networks. The Store downloaded its HTTPS catalogue, and
+  `net_test fetch https://example.com/` returned HTTP 200 with exit code 0.
+- `ble_test scan 8` received 26 advertisement reports and exited with code 0.
+- A Mac discovered and connected to `ble_test periph`, read a GATT value,
+  wrote and read back a changed value, and received Nordic UART notifications
+  in response to `status`. The app exited normally after the connection closed.
+- Two 64 KB random SD upload/readback checks passed: one with Wi-Fi active,
+  and one with BLE active. Wi-Fi rejoined after the BLE app exited. No crash
+  was recorded during the continuous session.
+- The final image passed `hello`, libc, HID parsing and thread tests. The
+  double-buffered graphics demo ran at 49.7 fps and the four-stream audio test
+  reported zero underruns. Weather's 32 KB internal stack also launched
+  successfully, with more than 200 KB of internal RAM free while running.
+
+UART DevLink uses 8 KB RX/TX rings to preserve internal SRAM for app stacks.
+Use this fork's host tool for its shorter transfer frames during radio activity.
+The board uses the upstream 128 KB L2 cache setting and puts general-purpose
+allocations above 1 KB in PSRAM preferentially, leaving internal RAM for stacks
+and DMA. DevLink `info` includes `largest_internal` as well as total free RAM.
 
 ## Hardware references
 

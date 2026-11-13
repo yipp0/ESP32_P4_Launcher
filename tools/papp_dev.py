@@ -113,6 +113,9 @@ class DevLink:
         self.ser = serial.Serial()
         self.ser.port = port
         self.ser.baudrate = baud or int(os.environ.get("PAPP_BAUD", "115200"))
+        # High baud rates are used by UART bridges. Bound each burst so the
+        # board can service SDIO/radio interrupts between file-transfer frames.
+        self.chunk_size = 1024 if self.ser.baudrate > 115200 else CHUNK
         self.ser.timeout = 0.05
         # Don't toggle DTR/RTS on open: on USB-Serial-JTAG RTS high with DTR low resets the chip.
         if os.name == "nt":
@@ -235,10 +238,10 @@ class DevLink:
         crc = zlib.crc32(data) & 0xFFFFFFFF
         self.request(PUT_BEGIN, struct.pack("<II", len(data), crc) + remote.encode() + b"\0")
         t0 = time.time()
-        for off in range(0, len(data), CHUNK):
-            self.request(PUT_DATA, data[off:off + CHUNK], timeout=10.0)
+        for off in range(0, len(data), self.chunk_size):
+            self.request(PUT_DATA, data[off:off + self.chunk_size], timeout=10.0)
             if progress:
-                pct = min(100, (off + CHUNK) * 100 // max(1, len(data)))
+                pct = min(100, (off + self.chunk_size) * 100 // max(1, len(data)))
                 print(f"\r  {remote}: {pct:3d}%", end="", file=sys.stderr, flush=True)
         self.request(PUT_END, timeout=10.0)
         dt = max(time.time() - t0, 1e-3)
@@ -251,7 +254,7 @@ class DevLink:
         data = bytearray()
         total = None
         while total is None or len(data) < total:
-            resp = self.request(SHOT, struct.pack("<II", len(data), CHUNK), timeout=10.0)
+            resp = self.request(SHOT, struct.pack("<II", len(data), self.chunk_size), timeout=10.0)
             w, h, fmt, rot, total = SHOT_HDR.unpack_from(resp)
             if fmt != 1:
                 raise DevLinkError(f"unknown screenshot format {fmt}")
@@ -265,7 +268,7 @@ class DevLink:
     def get(self, remote):
         out = bytearray()
         while True:
-            resp = self.request(GET, struct.pack("<II", len(out), CHUNK) + remote.encode() + b"\0",
+            resp = self.request(GET, struct.pack("<II", len(out), self.chunk_size) + remote.encode() + b"\0",
                                 timeout=10.0)
             (size,) = struct.unpack_from("<I", resp)
             out += resp[4:]

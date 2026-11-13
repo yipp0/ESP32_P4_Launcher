@@ -17,6 +17,9 @@
 #include "esp_sntp.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#if CONFIG_LX_HOSTED_DEFERRED_INIT
+#include "esp_hosted.h"
+#endif
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
@@ -570,6 +573,10 @@ static void net_task(void *arg)
 
 esp_err_t lx_net_init(void)
 {
+#if CONFIG_LX_HOSTED_DEFERRED_INIT
+    esp_err_t hosted_err = esp_hosted_init();
+    if (hosted_err != ESP_OK) return hosted_err;
+#endif
 #if CONFIG_LX_NET_DISABLED
     s_state = LX_NET_NO_RADIO;
     ESP_LOGI(TAG, "offline build: ESP-Hosted access disabled");

@@ -8,15 +8,14 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "driver/sdmmc_host.h"
+#include "driver/sdspi_host.h"
+#include "driver/spi_master.h"
 #include "sdmmc_cmd.h"
 #include "sd_pwr_ctrl_by_on_chip_ldo.h"
+#include "sd_pwr_ctrl.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-
-#if !CONFIG_LX_NET_DISABLED
-#error "T-Display P4 V1 currently requires LX_NET_DISABLED (factory C6 is ESP-AT)"
-#endif
 
 static const char *TAG = "bsp_p4";
 static bsp_info_t s_info = {
@@ -115,7 +114,8 @@ esp_err_t bsp_init(void)
                                        BOARD_IOX_LCD_RESET | BOARD_IOX_TOUCH_RESET), TAG, "panel reset");
     vTaskDelay(pdMS_TO_TICKS(120));
     board_set_cap(BSP_CAP_USB_HOST);
-    ESP_LOGI(TAG, "V1 power ready; C6 held in reset (offline build)");
+    ESP_RETURN_ON_ERROR(board_c6_configure(), TAG, "C6 transport configuration");
+    ESP_LOGI(TAG, "V1 power ready; C6 held in reset until transport starts");
     return ESP_OK;
 }
 
@@ -124,6 +124,27 @@ esp_err_t bsp_sdcard_mount(const char *mount_point)
     if (s_sd_mounted) return ESP_OK;
     ESP_RETURN_ON_ERROR(board_iox_update(BOARD_IOX_SD_DISABLE, 0), TAG, "SD power");
     vTaskDelay(pdMS_TO_TICKS(20));
+#if CONFIG_LX_HOSTED_DEFERRED_INIT
+    /* Keep the SD card on SPI while the C6 owns SDIO. Alternating transfers
+     * on both SDMMC slots produced card write errors on this V1/IDF setup. */
+    ESP_RETURN_ON_ERROR(sd_pwr_ctrl_set_io_voltage(s_sd_power, 3300), TAG, "SD voltage");
+    static bool bus_ready;
+    if (!bus_ready) {
+        spi_bus_config_t bus = {
+            .mosi_io_num = BOARD_SD_CMD, .miso_io_num = BOARD_SD_D0,
+            .sclk_io_num = BOARD_SD_CLK, .quadwp_io_num = -1, .quadhd_io_num = -1,
+            .max_transfer_sz = 16 * 1024,
+        };
+        ESP_RETURN_ON_ERROR(spi_bus_initialize(SPI2_HOST, &bus, SPI_DMA_CH_AUTO), TAG, "SD SPI bus");
+        bus_ready = true;
+    }
+    sdmmc_host_t host = SDSPI_HOST_DEFAULT();
+    host.slot = SPI2_HOST;
+    host.max_freq_khz = SDMMC_FREQ_DEFAULT;
+    sdspi_device_config_t slot = SDSPI_DEVICE_CONFIG_DEFAULT();
+    slot.host_id = SPI2_HOST;
+    slot.gpio_cs = BOARD_SD_D3;
+#else
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.slot = SDMMC_HOST_SLOT_0;
     host.max_freq_khz = SDMMC_FREQ_DEFAULT;
@@ -134,12 +155,17 @@ esp_err_t bsp_sdcard_mount(const char *mount_point)
     slot.d0 = BOARD_SD_D0; slot.d1 = BOARD_SD_D1;
     slot.d2 = BOARD_SD_D2; slot.d3 = BOARD_SD_D3;
     slot.flags |= SDMMC_SLOT_FLAG_INTERNAL_PULLUP;
+#endif
     esp_vfs_fat_sdmmc_mount_config_t cfg = {
         .format_if_mount_failed = false, .max_files = 16,
         .allocation_unit_size = 16 * 1024,
     };
     sdmmc_card_t *card = NULL;
+#if CONFIG_LX_HOSTED_DEFERRED_INIT
+    esp_err_t err = esp_vfs_fat_sdspi_mount(mount_point, &host, &slot, &cfg, &card);
+#else
     esp_err_t err = esp_vfs_fat_sdmmc_mount(mount_point, &host, &slot, &cfg, &card);
+#endif
     if (err == ESP_OK) {
         s_sd_mounted = true;
         board_set_cap(BSP_CAP_SDCARD);
