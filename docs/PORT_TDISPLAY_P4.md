@@ -123,8 +123,10 @@ Tested on 2026-11-13 with a V1 H753 AMOLED board (P4 revision 1.0), ESP-IDF
   requires a listening check.
 - DevLink reported working RTC time and the battery-voltage capability.
   Clock and Files were built and installed under the Tools folder.
+- The board owner confirmed that physical touch opens Tools and Clock, and
+  that Clock displays correctly.
 
-USB controller hardware, physical touch accuracy/multi-touch, battery-only
+USB controller hardware, touch edge accuracy/multi-touch, battery-only
 runtime and RTC retention across a loss of power still need manual testing.
 The HID parser test exercises descriptors without a physical USB controller.
 
